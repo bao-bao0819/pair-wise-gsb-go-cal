@@ -37,6 +37,12 @@ type BusinessCalendar struct {
 	workdayEnd       time.Duration  // the time of day at which workdays end
 	WorkdayEndFunc   WorkdayEndFn   // optional function to override workday end time
 
+	loc           *time.Location                   // explicit location the calendar is bound to; required by window APIs
+	dstPolicy     AmbiguousTimePolicy              // how non-existent/repeated local boundaries are resolved
+	windows       bool                             // true once multi-window rules have been configured
+	weeklyWindows [7][]LocalWindow                 // recurring windows keyed by weekday of the shift start date
+	dateWindows   map[workWindowDate][]LocalWindow // one-off windows keyed by shift start date
+
 	Calendar
 }
 
@@ -51,6 +57,16 @@ func NewBusinessCalendar() *BusinessCalendar {
 	c.workday[time.Friday] = true
 	c.workdayStart = 9 * time.Hour
 	c.workdayEnd = 17 * time.Hour
+	c.dstPolicy = AmbiguousError
+	return c
+}
+
+// NewBusinessCalendarIn creates a new BusinessCalendar bound to the given
+// time.Location with the same defaults as NewBusinessCalendar. A bound
+// location is required for the multi-window work-time APIs.
+func NewBusinessCalendarIn(loc *time.Location) *BusinessCalendar {
+	c := NewBusinessCalendar()
+	c.loc = loc
 	return c
 }
 
@@ -356,6 +372,16 @@ func (c *BusinessCalendar) WorkHoursInRange(start, end time.Time) time.Duration 
 	r := time.Duration(0)
 	if end.Before(start) {
 		start, end = end, start
+	}
+
+	if c.loc != nil && c.windows {
+		ivs, err := c.WorkIntervals(start, end)
+		if err == nil {
+			for _, iv := range ivs {
+				r += iv.End.Sub(iv.Start)
+			}
+		}
+		return r
 	}
 
 	var current time.Time
