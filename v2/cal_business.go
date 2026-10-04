@@ -37,6 +37,8 @@ type BusinessCalendar struct {
 	workdayEnd       time.Duration  // the time of day at which workdays end
 	WorkdayEndFunc   WorkdayEndFn   // optional function to override workday end time
 
+	rotation *rotationSchedule // optional rotating N-day work pattern
+
 	Calendar
 }
 
@@ -72,7 +74,9 @@ func (c *BusinessCalendar) SetWorkHours(start time.Duration, end time.Duration) 
 func (c *BusinessCalendar) IsWorkday(date time.Time) bool {
 
 	var workday bool
-	if c.WorkdayFunc == nil {
+	if c.rotation != nil {
+		return c.rotationWorkday(date)
+	} else if c.WorkdayFunc == nil {
 		workday = c.workday[date.Weekday()]
 	} else {
 		workday = c.WorkdayFunc(date)
