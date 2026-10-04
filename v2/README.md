@@ -101,3 +101,36 @@ func main() {
 	}
 }
 ```
+
+# Rotating shift schedules
+
+Schedules such as a "four-shift rotation" or "two days on, two days off"
+repeat every N days rather than every week, so a pattern can straddle
+weekends and month boundaries. `SetWorkdayCycle` describes them with an anchor
+civil date (pattern index 0) and a boolean sequence:
+
+```go
+loc, _ := time.LoadLocation("Asia/Shanghai")
+anchor := time.Date(2024, 3, 7, 0, 0, 0, 0, loc)
+// two days on, two days off; index 0 is a workday
+if err := c.SetWorkdayCycle(anchor, []bool{true, true, false, false}); err != nil {
+    log.Fatal(err) // only possible for an empty pattern
+}
+```
+
+The anchor corresponds to index 0; earlier dates use the non-negative
+remainder of `(date-anchor) mod N`. Differences are counted by calendar date
+(not a 24-hour duration), so long/short months, leap days, and DST
+transitions never shift the phase. Caller instants are first converted to the
+anchor's timezone before their civil date is resolved.
+
+Use `SetHolidaysSuspendWork(false)` to let the rotation run through holidays
+instead of forcing those days off (the default). An individual date can be
+swapped with `SetWorkdayException`; the exception overrides both the cycle
+and holidays for that day but never moves the phase of later dates:
+
+```go
+c.SetHolidaysSuspendWork(false)          // holidays no longer stop the rotation
+c.SetWorkdayException(restDay, true)     // work a rest day once (调班)
+c.RemoveWorkdayException(restDay)        // cancel the swap
+```

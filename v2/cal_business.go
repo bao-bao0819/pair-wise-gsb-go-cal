@@ -2,7 +2,14 @@
 
 package cal
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrEmptyWorkdayCycle is returned when a workday cycle is configured with an
+// empty pattern.
+var ErrEmptyWorkdayCycle = errors.New("workday cycle pattern must not be empty")
 
 // WorkdayFn reports whether the given date is a workday.
 // This is useful for situations where work days change throughout the year.
@@ -32,6 +39,24 @@ type BusinessCalendar struct {
 	workday     [7]bool   // flags to indicate a day of the week is a workday
 	WorkdayFunc WorkdayFn // optional function to override workday flags
 
+	// cycleAnchor is the civil date that corresponds to cycle index 0; its
+	// location is the binding timezone used to convert instants and civil date
+	// keys. Stored at noon to make date arithmetic immune to DST shifts.
+	cycleAnchor  time.Time
+	cyclePattern []bool // repeating N-day workday pattern; copied on set
+
+	// holidaysSuspendWork reports whether a holiday forces the day off even
+	// when the rotation would otherwise work it. NewBusinessCalendar sets it
+	// true to preserve the default "holidays are not workdays" behavior; an
+	// explicit SetHolidaysSuspendWork(false) lets the rotation run through
+	// holidays.
+	holidaysSuspendWork bool
+
+	// workdayExceptions are ad-hoc shift swaps keyed by civil date in the
+	// binding timezone. They override both the cycle and holidays, but never
+	// shift the phase of later dates.
+	workdayExceptions map[holCacheKey]bool
+
 	workdayStart     time.Duration  // the time of day at which the workdays starts
 	WorkdayStartFunc WorkdayStartFn // optional function to override workday start time
 	workdayEnd       time.Duration  // the time of day at which workdays end
@@ -51,12 +76,123 @@ func NewBusinessCalendar() *BusinessCalendar {
 	c.workday[time.Friday] = true
 	c.workdayStart = 9 * time.Hour
 	c.workdayEnd = 17 * time.Hour
+	c.holidaysSuspendWork = true
 	return c
 }
 
 // SetWorkday changes the given day's status as a standard working day
 func (c *BusinessCalendar) SetWorkday(day time.Weekday, workday bool) {
 	c.workday[day] = workday
+}
+
+// SetWorkdayCycle configures workdays as an N-day boolean sequence anchored to
+// a civil date. anchor corresponds to pattern index 0; subsequent dates use
+// indices 1, 2, ... and earlier dates use the mathematically defined
+// non-negative remainder of (date-anchor) mod len(pattern), so a pattern such
+// as two days on, two days off keeps its phase across weekends, month
+// boundaries, leap days, and DST transitions.
+//
+// Date differences are counted by calendar date, never by dividing a 24-hour
+// duration. The anchor's timezone becomes the binding timezone: callers may
+// pass an instant in any timezone and it is first converted to that timezone
+// before its civil date is resolved.
+//
+// Once set, the cycle replaces the per-weekday flags and WorkdayFn for
+// determining the underlying working pattern. The pattern slice is copied, so
+// later mutation of the caller's slice does not affect the calendar.
+//
+// ErrEmptyWorkdayCycle is returned if pattern is empty.
+func (c *BusinessCalendar) SetWorkdayCycle(anchor time.Time, pattern []bool) error {
+	if len(pattern) == 0 {
+		return ErrEmptyWorkdayCycle
+	}
+
+	c.cycleAnchor = civilNoon(anchor)
+	c.cyclePattern = make([]bool, len(pattern))
+	copy(c.cyclePattern, pattern)
+	return nil
+}
+
+// SetHolidaysSuspendWork configures whether configured holidays override the
+// working pattern and force the day off (suspend true), or whether the
+// rotation runs as usual through holidays (suspend false).
+//
+// When no workday cycle is configured the default matches the historical
+// behavior: holidays suspend work.
+func (c *BusinessCalendar) SetHolidaysSuspendWork(suspend bool) {
+	c.holidaysSuspendWork = suspend
+}
+
+// SetWorkdayException records an ad-hoc schedule adjustment for a single civil
+// date: pass true to make the date a workday (for example a weekend worked to
+// compensate for a holiday), or false to grant the date off. The override is
+// applied outermost in IsWorkday and only affects that date; the phase of
+// later dates is determined by the original cycle and is never shifted.
+//
+// The date's civil year/month/day is taken in the binding timezone: the
+// workday cycle anchor's timezone when a cycle is set, otherwise UTC. Its
+// time-of-day is ignored.
+func (c *BusinessCalendar) SetWorkdayException(date time.Time, workday bool) {
+	if c.workdayExceptions == nil {
+		c.workdayExceptions = make(map[holCacheKey]bool)
+	}
+	c.workdayExceptions[civilKey(date, c.bindingLoc())] = workday
+}
+
+// RemoveWorkdayException removes a previously recorded ad-hoc schedule
+// adjustment for the given civil date, if any.
+func (c *BusinessCalendar) RemoveWorkdayException(date time.Time) {
+	if c.workdayExceptions != nil {
+		delete(c.workdayExceptions, c.civilKeyInBinding(date))
+	}
+}
+
+// ClearWorkdayExceptions removes all ad-hoc schedule adjustments.
+func (c *BusinessCalendar) ClearWorkdayExceptions() {
+	c.workdayExceptions = nil
+}
+
+// bindingLoc reports the timezone used to resolve caller instants and civil
+// date keys. A configured cycle anchors the timezone to the anchor's
+// location; otherwise UTC is used.
+func (c *BusinessCalendar) bindingLoc() *time.Location {
+	if c.cyclePattern != nil {
+		if loc := c.cycleAnchor.Location(); loc != nil {
+			return loc
+		}
+	}
+	return time.UTC
+}
+
+// civilKeyInBinding converts an instant to the binding timezone and returns
+// its civil date key.
+func (c *BusinessCalendar) civilKeyInBinding(date time.Time) holCacheKey {
+	return civilKey(date, c.bindingLoc())
+}
+
+// civilKey returns the civil date key of an instant interpreted in loc.
+func civilKey(date time.Time, loc *time.Location) holCacheKey {
+	local := date.In(loc)
+	year, month, day := local.Date()
+	return holCacheKey{year: year, month: month, day: day}
+}
+
+// civilNoon returns noon of t's civil date in t's location. Noon is used so
+// that whole calendar-day differences never straddle a date around DST.
+func civilNoon(t time.Time) time.Time {
+	year, month, day := t.Date()
+	return time.Date(year, month, day, 12, 0, 0, 0, t.Location())
+}
+
+// civilDays reports the signed number of calendar dates from a to b by
+// comparing noon instants in their own timezones. The result is a pure date
+// difference (immune to DST and never computed as a duration divided by 24h).
+func civilDays(a, b time.Time) int {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	an := time.Date(ay, am, ad, 12, 0, 0, 0, time.UTC)
+	bn := time.Date(by, bm, bd, 12, 0, 0, 0, time.UTC)
+	return int(bn.Sub(an) / (24 * time.Hour))
 }
 
 // SetWorkHours sets the start and end times for a workday.
@@ -70,6 +206,32 @@ func (c *BusinessCalendar) SetWorkHours(start time.Duration, end time.Duration) 
 
 // IsWorkday reports whether a given date is a work day (business day).
 func (c *BusinessCalendar) IsWorkday(date time.Time) bool {
+	// Ad-hoc shift swaps apply outermost: they override both the rotation and
+	// holidays for that date alone, without moving the cycle phase.
+	if c.workdayExceptions != nil {
+		if workday, ok := c.workdayExceptions[c.civilKeyInBinding(date)]; ok {
+			return workday
+		}
+	}
+
+	local := date.In(c.bindingLoc())
+
+	if c.cyclePattern != nil {
+		idx := civilDays(c.cycleAnchor, local) % len(c.cyclePattern)
+		if idx < 0 {
+			idx += len(c.cyclePattern)
+		}
+		workday := c.cyclePattern[idx]
+		if !workday {
+			return false
+		}
+		if !c.holidaysSuspendWork {
+			return true
+		}
+
+		_, obs, _ := c.IsHoliday(local)
+		return !obs
+	}
 
 	var workday bool
 	if c.WorkdayFunc == nil {
