@@ -16,6 +16,13 @@ calendar with holidays.
 BusinessCalendar adds additional functionality for calculating workdays and 
 hours worked.
 
+DerivedSet allows new holidays to be declared as rules derived from existing
+ones: civil day offsets, workday offsets against an independent base
+BusinessCalendar, and earliest/latest date selection. Rules reference each
+other by stable names, are validated for missing references and cycles at
+construction time, and report occurrences with the chain of rules that
+produced them.
+
 # Differences from v1
 For v2, much of the functionality of this library was rewritten to address
 shortcomings of the v1 releases. This version provides the following benefits
