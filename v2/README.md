@@ -74,7 +74,7 @@ func main() {
 		// create daily activity reports
 	}
 
-	if cal.IsWeekend(t) {
+if cal.IsWeekend(t) {
 		// validate employee time submissions
 	}
 
@@ -101,3 +101,53 @@ func main() {
 	}
 }
 ```
+
+## Joint availability
+
+When several teams follow their own working calendars in different time
+zones, `JointAvailability` finds the earliest continuous window during which
+either every team, or at least `MinParticipants` teams, are available at the
+same time.
+
+Each calendar is paired with the explicit time zone in which its working
+hours, weekends, and holidays are interpreted; those local rules are
+resolved into absolute instants before the calendars are intersected, and
+`DefaultLoc`/`time.Local` is never read or modified. Availability is computed
+from continuous intervals, so time on the two sides of a break (lunch,
+overnight, weekend) is never added together. The search only enumerates day
+boundaries within the supplied finite range and sweeps the resulting
+interval endpoints; it never probes the range point by point.
+
+```go
+ny, _ := time.LoadLocation("America/New_York")
+tk, _ := time.LoadLocation("Asia/Tokyo")
+
+result, err := cal.JointAvailability(
+	[]cal.JointCalendar{
+		{ID: "ny", Calendar: cal.NewBusinessCalendar(), Location: ny},
+		{ID: "tk", Calendar: cal.NewBusinessCalendar(), Location: tk},
+	},
+	cal.JointOptions{
+		From:            time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC),
+		To:              time.Date(2026, 1, 12, 0, 0, 0, 0, time.UTC),
+		Duration:        2 * time.Hour,
+		MinParticipants: 0, // 0 means every team must be available
+	},
+)
+switch {
+case err == cal.ErrJointNoWindow:
+	// no continuous window long enough in the range
+case err != nil:
+	// ErrJointNoCalendars, ErrJointDuplicateID, ErrJointInvalidK, ...
+default:
+	w := result.Earliest
+	fmt.Println(w.Start, w.End, w.Participants)
+	// w.Boundaries holds the same instant expressed as local wall-clock
+	// start/end times for each participating calendar
+}
+```
+
+With `MinParticipants` greater than zero (and no larger than the number of
+calendars), each returned window carries the sorted `Participants` list for
+that interval; adjacent intervals whose participant set changes are reported
+as separate windows.
