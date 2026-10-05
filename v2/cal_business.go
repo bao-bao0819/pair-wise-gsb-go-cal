@@ -32,10 +32,11 @@ type BusinessCalendar struct {
 	workday     [7]bool   // flags to indicate a day of the week is a workday
 	WorkdayFunc WorkdayFn // optional function to override workday flags
 
-	workdayStart     time.Duration  // the time of day at which the workdays starts
-	WorkdayStartFunc WorkdayStartFn // optional function to override workday start time
-	workdayEnd       time.Duration  // the time of day at which workdays end
-	WorkdayEndFunc   WorkdayEndFn   // optional function to override workday end time
+	workdayStart         time.Duration      // the time of day at which the workdays starts
+	WorkdayStartFunc     WorkdayStartFn     // optional function to override workday start time
+	workdayEnd           time.Duration      // the time of day at which workdays end
+	WorkdayEndFunc       WorkdayEndFn       // optional function to override workday end time
+	WorkdayIntervalsFunc WorkdayIntervalsFn // optional function to report multiple work intervals
 
 	Calendar
 }
